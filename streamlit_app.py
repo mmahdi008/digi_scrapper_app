@@ -140,16 +140,30 @@ def _safe_get(d, *path, default=None):
 def _get_json(url):
     headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
     last_err = None
-    for _ in range(RETRIES):
+    print(f"Fetching URL: {url}")  # Debug log
+    for attempt in range(RETRIES):
         try:
+            print(f"Attempt {attempt + 1}/{RETRIES}")  # Debug log
             r = requests.get(url, headers=headers, timeout=TIMEOUT)
+            print(f"Response status: {r.status_code}")  # Debug log
             if r.status_code == 200:
+                print(f"Successfully fetched data")  # Debug log
                 return r.json()
             last_err = f"HTTP {r.status_code}"
+        except requests.exceptions.Timeout as e:
+            last_err = f"Timeout: {str(e)}"
+            print(f"Timeout error: {e}")  # Debug log
+        except requests.exceptions.RequestException as e:
+            last_err = f"Request error: {str(e)}"
+            print(f"Request error: {e}")  # Debug log
         except Exception as e:
             last_err = str(e)
-        time.sleep(0.7)
-    raise RuntimeError(f"Failed to fetch {url}. {last_err}")
+            print(f"Unexpected error: {e}")  # Debug log
+        if attempt < RETRIES - 1:
+            time.sleep(0.7)
+    error_msg = f"Failed to fetch {url}. {last_err}"
+    print(f"ERROR: {error_msg}")  # Debug log
+    raise RuntimeError(error_msg)
 
 def _find_products(payload):
     prods = _safe_get(payload, "data", "products")
@@ -353,7 +367,9 @@ def _row(prod):
     }
 
 def scrape_from_plp(plp_url, target_count, progress_bar, status_text):
+    print(f"Starting scrape for URL: {plp_url}, target: {target_count}")  # Debug log
     api_pattern = plp_to_api(plp_url)
+    print(f"API pattern: {api_pattern}")  # Debug log
     all_rows = []
     try:
         page = int(parse_qs(urlparse(api_pattern).query).get("page", ["1"])[0])
@@ -362,13 +378,18 @@ def scrape_from_plp(plp_url, target_count, progress_bar, status_text):
     collected, seen_ids = 0, set()
     start_url = api_pattern
     consecutive_empty_pages = 0
+    max_pages = 100  # Safety limit to prevent infinite loops
     
-    while collected < target_count:
+    print(f"Starting from page {page}")  # Debug log
+    
+    while collected < target_count and page <= max_pages:
         page_url = _update_url_page(start_url, page)
-        status_text.text(f"📄 Fetching page {page}... ({collected}/{target_count} products collected)")
+        print(f"Processing page {page}: {page_url}")  # Debug log
+        status_text.markdown(f"**📄 Fetching page {page}...** ({collected}/{target_count} products collected)")
         
         try:
             data = _get_json(page_url)
+            print(f"Got data, looking for products...")  # Debug log
             
             # Check pagination metadata if available
             pager = _safe_get(data, "data", "pager")
@@ -378,21 +399,22 @@ def scrape_from_plp(plp_url, target_count, progress_bar, status_text):
                 total_items = _safe_get(pager, "total_items", default=0)
                 
                 if total_pages and current_page > total_pages:
-                    status_text.warning(f"⚠️ No more pages available. Total pages: {total_pages}")
+                    status_text.markdown(f"**⚠️ No more pages available.** Total pages: {total_pages}")
                     break
                 
                 if total_items == 0:
-                    status_text.warning("⚠️ No products found in this category/search.")
+                    status_text.markdown("**⚠️ No products found in this category/search.**")
                     break
             
             products = _find_products(data)
+            print(f"Found {len(products) if products else 0} products on page {page}")  # Debug log
             
             if not products:
                 consecutive_empty_pages += 1
                 if consecutive_empty_pages >= 2:
-                    status_text.warning("⚠️ No products found on multiple consecutive pages. Stopping.")
+                    status_text.markdown("**⚠️ No products found on multiple consecutive pages. Stopping.**")
                     break
-                status_text.text(f"📄 No products on page {page}. Trying next page...")
+                status_text.markdown(f"**📄 No products on page {page}.** Trying next page...")
                 page += 1
                 time.sleep(SLEEP_BETWEEN)
                 continue
@@ -414,10 +436,12 @@ def scrape_from_plp(plp_url, target_count, progress_bar, status_text):
                     if collected >= target_count:
                         break
                 except Exception as e:
-                    status_text.warning(f"⚠️ Error processing product {pid}: {str(e)}")
+                    # Log error but continue processing other products
+                    print(f"Warning: Error processing product {pid}: {e}")
                     continue
             
-            status_text.text(f"✅ Page {page}: Added {products_added_this_page} products (Total: {collected})")
+            print(f"Page {page}: Added {products_added_this_page} products (Total: {collected})")  # Debug log
+            status_text.markdown(f"**✅ Page {page}:** Added {products_added_this_page} products (Total: {collected})")
             
             # Update progress
             progress = min(collected / target_count, 1.0)
@@ -428,7 +452,7 @@ def scrape_from_plp(plp_url, target_count, progress_bar, status_text):
             
             # Check if we should continue paginating
             if products_added_this_page == 0:
-                status_text.warning("⚠️ No new products added. Stopping pagination.")
+                status_text.markdown("**⚠️ No new products added. Stopping pagination.**")
                 break
                 
             page += 1
@@ -437,21 +461,27 @@ def scrape_from_plp(plp_url, target_count, progress_bar, status_text):
         except RuntimeError as e:
             if page == 1:
                 # If first page fails, raise the error
-                status_text.error(f"❌ Error fetching first page: {str(e)}")
+                status_text.markdown(f"**❌ Error fetching first page:** {str(e)}")
                 raise
             # Otherwise, stop pagination
-            status_text.warning(f"⚠️ Error on page {page}: {str(e)}. Stopping.")
+            status_text.markdown(f"**⚠️ Error on page {page}:** {str(e)}. Stopping.")
             break
         except Exception as e:
             if page == 1:
-                status_text.error(f"❌ Unexpected error on first page: {str(e)}")
+                status_text.markdown(f"**❌ Unexpected error on first page:** {str(e)}")
                 raise
-            status_text.warning(f"⚠️ Unexpected error on page {page}: {str(e)}. Stopping.")
+            status_text.markdown(f"**⚠️ Unexpected error on page {page}:** {str(e)}. Stopping.")
             break
+    
+    if page > max_pages:
+        status_text.markdown(f"**⚠️ Reached maximum page limit ({max_pages}). Stopping.**")
+    
+    print(f"Scraping complete. Collected {len(all_rows)} products total.")  # Debug log
     
     # Create DataFrame with proper handling for empty results
     if not all_rows:
-        status_text.warning("⚠️ No products were collected.")
+        status_text.markdown("**⚠️ No products were collected.**")
+        print("WARNING: No products collected")  # Debug log
         # Create empty DataFrame with correct columns
         df = pd.DataFrame(columns=[
             "uri", "title_fa", "id", "brand", "category",
@@ -468,6 +498,7 @@ def scrape_from_plp(plp_url, target_count, progress_bar, status_text):
             "rrp_price", "is_promotion", "discount_percent"
         ]
         df = df.reindex(columns=cols)
+        print(f"Created DataFrame with {len(df)} rows and {len(df.columns)} columns")  # Debug log
     
     return df
 
@@ -507,42 +538,68 @@ if scrape_button:
             progress_bar = st.progress(0)
             status_text = st.empty()
             
-            # Scrape
-            with st.spinner("Scraping products..."):
+            # Create a status log area
+            status_log = st.empty()
+            
+            # Scrape with better error visibility
+            try:
+                # Initialize status
+                status_text.markdown("**🚀 Starting scraping...**")
+                
                 df = scrape_from_plp(plp_url, target_count, progress_bar, status_text)
-            
-            # Results
-            st.success(f"✅ Successfully scraped {len(df)} products!")
-            st.markdown("---")
-            
-            # Display results
-            st.subheader("📊 Results")
-            st.dataframe(df, use_container_width=True, height=400)
-            
-            # Download button
-            csv = df.to_csv(index=False, encoding="utf-8-sig")
-            st.download_button(
-                label="📥 Download CSV",
-                data=csv,
-                file_name=f"digikala_products_{len(df)}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-            
-            # Statistics
-            st.markdown("---")
-            st.subheader("📈 Statistics")
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total Products", len(df))
-            with col2:
-                st.metric("Unique Brands", df["brand"].nunique())
-            with col3:
-                avg_price = df["selling_price"].mean()
-                st.metric("Avg Price", f"{avg_price:,.0f}" if pd.notna(avg_price) else "N/A")
-            with col4:
-                promotions = df["is_promotion"].sum()
-                st.metric("Promotions", promotions)
+                
+                # Clear the status and show results
+                status_text.empty()
+                progress_bar.empty()
+                
+                # Results
+                st.success(f"✅ Successfully scraped {len(df)} products!")
+                st.markdown("---")
+                
+                # Display results
+                st.subheader("📊 Results")
+                if len(df) > 0:
+                    st.dataframe(df, use_container_width=True, height=400)
+                    
+                    # Download button
+                    csv = df.to_csv(index=False, encoding="utf-8-sig")
+                    st.download_button(
+                        label="📥 Download CSV",
+                        data=csv,
+                        file_name=f"digikala_products_{len(df)}.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+                    
+                    # Statistics
+                    st.markdown("---")
+                    st.subheader("📈 Statistics")
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("Total Products", len(df))
+                    with col2:
+                        st.metric("Unique Brands", df["brand"].nunique())
+                    with col3:
+                        avg_price = df["selling_price"].mean()
+                        st.metric("Avg Price", f"{avg_price:,.0f}" if pd.notna(avg_price) else "N/A")
+                    with col4:
+                        promotions = df["is_promotion"].sum()
+                        st.metric("Promotions", promotions)
+                else:
+                    st.warning("⚠️ No products were found. Please check the URL and try again.")
+                    
+            except Exception as scrape_error:
+                status_text.empty()
+                progress_bar.empty()
+                st.error(f"❌ Scraping Error: {str(scrape_error)}")
+                st.exception(scrape_error)
+                # Still try to show partial results if any were collected
+                try:
+                    if 'df' in locals() and len(df) > 0:
+                        st.info(f"⚠️ Partial results: {len(df)} products collected before error")
+                        st.dataframe(df)
+                except:
+                    pass
                 
         except Exception as e:
             st.error(f"❌ Error: {str(e)}")
