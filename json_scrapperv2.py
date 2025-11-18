@@ -344,14 +344,16 @@ def scrape_from_plp(plp_url, target_count=TARGET_COUNT):
 
 # %%
 # Interactive usage: paste PLP URL at runtime
-plp = input("Paste Digikala PLP URL (e.g. https://www.digikala.com/search/category-mobile-phone/): ").strip()
-if not plp:
-    raise SystemExit("No URL provided.")
-api_pattern = plp_to_api(plp)
-print("Derived API pattern:", api_pattern)
-df = scrape_from_plp(plp, TARGET_COUNT)
-display(df.head(12).loc[:, ["uri","brand","category","item_category3","title_fa",
-                           "selling_price","rrp_price","is_promotion","discount_percent"]])
+# NOTE: This code is commented out for Streamlit Cloud compatibility
+# Use the web app (app.py or streamlit_app.py) instead for interactive usage
+# plp = input("Paste Digikala PLP URL (e.g. https://www.digikala.com/search/category-mobile-phone/): ").strip()
+# if not plp:
+#     raise SystemExit("No URL provided.")
+# api_pattern = plp_to_api(plp)
+# print("Derived API pattern:", api_pattern)
+# df = scrape_from_plp(plp, TARGET_COUNT)
+# display(df.head(12).loc[:, ["uri","brand","category","item_category3","title_fa",
+#                            "selling_price","rrp_price","is_promotion","discount_percent"]])
 
 
 
