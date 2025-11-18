@@ -137,33 +137,99 @@ def _safe_get(d, *path, default=None):
             return default
     return cur
 
-def _get_json(url):
-    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
-    last_err = None
-    print(f"Fetching URL: {url}")  # Debug log
-    for attempt in range(RETRIES):
-        try:
-            print(f"Attempt {attempt + 1}/{RETRIES}")  # Debug log
-            r = requests.get(url, headers=headers, timeout=TIMEOUT)
-            print(f"Response status: {r.status_code}")  # Debug log
-            if r.status_code == 200:
-                print(f"Successfully fetched data")  # Debug log
-                return r.json()
-            last_err = f"HTTP {r.status_code}"
-        except requests.exceptions.Timeout as e:
-            last_err = f"Timeout: {str(e)}"
-            print(f"Timeout error: {e}")  # Debug log
-        except requests.exceptions.RequestException as e:
-            last_err = f"Request error: {str(e)}"
-            print(f"Request error: {e}")  # Debug log
-        except Exception as e:
-            last_err = str(e)
-            print(f"Unexpected error: {e}")  # Debug log
-        if attempt < RETRIES - 1:
-            time.sleep(0.7)
-    error_msg = f"Failed to fetch {url}. {last_err}"
-    print(f"ERROR: {error_msg}")  # Debug log
-    raise RuntimeError(error_msg)
+def _get_json(url, use_scrapingbee=False, scrapingbee_api_key=None):
+    """
+    Fetch JSON data from URL.
+    If use_scrapingbee=True and api_key provided, uses ScrapingBee proxy service.
+    """
+    if use_scrapingbee and scrapingbee_api_key:
+        # Use ScrapingBee API
+        scrapingbee_url = "https://app.scrapingbee.com/api/v1/"
+        
+        params = {
+            'api_key': scrapingbee_api_key,
+            'url': url,
+            'render_js': 'false',  # Set to 'true' if you need JavaScript rendering
+            'premium_proxy': 'true',  # Use premium proxies
+            'country_code': 'us'  # Optional: specify country
+        }
+        
+        headers = {"Accept": "application/json"}
+        last_err = None
+        
+        print(f"Fetching URL via ScrapingBee: {url}")  # Debug log
+        for attempt in range(RETRIES):
+            try:
+                print(f"Attempt {attempt + 1}/{RETRIES} (via ScrapingBee)")  # Debug log
+                r = requests.get(scrapingbee_url, params=params, headers=headers, timeout=TIMEOUT)
+                print(f"Response status: {r.status_code}")  # Debug log
+                
+                if r.status_code == 200:
+                    # ScrapingBee returns the scraped content in response.text
+                    # The content is the actual response from the target URL
+                    try:
+                        # Try to parse as JSON directly
+                        return r.json()
+                    except ValueError:
+                        # If not JSON, the response might be text/HTML
+                        # Try to parse the text content as JSON
+                        try:
+                            import json
+                            return json.loads(r.text)
+                        except:
+                            # If still not JSON, return None and let the caller handle it
+                            print(f"⚠️ ScrapingBee returned non-JSON content. Content type: {r.headers.get('content-type', 'unknown')}")
+                            print(f"First 200 chars: {r.text[:200]}")
+                            raise RuntimeError("ScrapingBee returned non-JSON content. The target URL might not be returning JSON.")
+                elif r.status_code == 403:
+                    last_err = f"HTTP 403 - ScrapingBee API key may be invalid or quota exceeded"
+                    print(f"⚠️ ScrapingBee Error: {last_err}")  # Debug log
+                else:
+                    last_err = f"HTTP {r.status_code}"
+                    print(f"⚠️ ScrapingBee Error: {last_err}")  # Debug log
+            except requests.exceptions.Timeout as e:
+                last_err = f"Timeout: {str(e)}"
+                print(f"Timeout error: {e}")  # Debug log
+            except requests.exceptions.RequestException as e:
+                last_err = f"Request error: {str(e)}"
+                print(f"Request error: {e}")  # Debug log
+            except Exception as e:
+                last_err = str(e)
+                print(f"Unexpected error: {e}")  # Debug log
+            if attempt < RETRIES - 1:
+                time.sleep(0.7)
+        error_msg = f"Failed to fetch {url} via ScrapingBee. {last_err}"
+        print(f"ERROR: {error_msg}")  # Debug log
+        raise RuntimeError(error_msg)
+    
+    else:
+        # Original direct method
+        headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+        last_err = None
+        print(f"Fetching URL: {url}")  # Debug log
+        for attempt in range(RETRIES):
+            try:
+                print(f"Attempt {attempt + 1}/{RETRIES}")  # Debug log
+                r = requests.get(url, headers=headers, timeout=TIMEOUT)
+                print(f"Response status: {r.status_code}")  # Debug log
+                if r.status_code == 200:
+                    print(f"Successfully fetched data")  # Debug log
+                    return r.json()
+                last_err = f"HTTP {r.status_code}"
+            except requests.exceptions.Timeout as e:
+                last_err = f"Timeout: {str(e)}"
+                print(f"Timeout error: {e}")  # Debug log
+            except requests.exceptions.RequestException as e:
+                last_err = f"Request error: {str(e)}"
+                print(f"Request error: {e}")  # Debug log
+            except Exception as e:
+                last_err = str(e)
+                print(f"Unexpected error: {e}")  # Debug log
+            if attempt < RETRIES - 1:
+                time.sleep(0.7)
+        error_msg = f"Failed to fetch {url}. {last_err}"
+        print(f"ERROR: {error_msg}")  # Debug log
+        raise RuntimeError(error_msg)
 
 def _find_products(payload):
     prods = _safe_get(payload, "data", "products")
@@ -366,8 +432,10 @@ def _row(prod):
         "discount_percent": _extract_discount_percent(prod),
     }
 
-def scrape_from_plp(plp_url, target_count, progress_bar, status_text):
+def scrape_from_plp(plp_url, target_count, progress_bar, status_text, use_scrapingbee=False, scrapingbee_api_key=None):
     print(f"Starting scrape for URL: {plp_url}, target: {target_count}")  # Debug log
+    if use_scrapingbee:
+        print(f"Using ScrapingBee proxy")  # Debug log
     api_pattern = plp_to_api(plp_url)
     print(f"API pattern: {api_pattern}")  # Debug log
     all_rows = []
@@ -388,7 +456,7 @@ def scrape_from_plp(plp_url, target_count, progress_bar, status_text):
         status_text.markdown(f"**📄 Fetching page {page}...** ({collected}/{target_count} products collected)")
         
         try:
-            data = _get_json(page_url)
+            data = _get_json(page_url, use_scrapingbee=use_scrapingbee, scrapingbee_api_key=scrapingbee_api_key)
             print(f"Got data, looking for products...")  # Debug log
             
             # Check pagination metadata if available
@@ -523,6 +591,28 @@ with st.sidebar:
         help="Number of products to scrape"
     )
     test_mode = st.checkbox("🧪 Test Mode (scrape only 10 products)", value=False, help="Use this to test if scraping works")
+    
+    st.markdown("---")
+    st.subheader("🔄 Proxy Settings")
+    use_scrapingbee = st.checkbox("Use ScrapingBee Proxy", value=False, help="Enable to use ScrapingBee proxy service (helps avoid IP blocking)")
+    
+    scrapingbee_api_key = None
+    if use_scrapingbee:
+        # Try to get from secrets first (for production)
+        if 'scrapingbee' in st.secrets and 'api_key' in st.secrets.scrapingbee:
+            scrapingbee_api_key = st.secrets.scrapingbee.api_key
+            st.success("✅ Using ScrapingBee API key from secrets")
+        else:
+            # Allow manual input
+            scrapingbee_api_key = st.text_input(
+                "ScrapingBee API Key",
+                type="password",
+                placeholder="Enter your ScrapingBee API key",
+                help="Get your API key from https://www.scrapingbee.com/"
+            )
+            if not scrapingbee_api_key:
+                st.warning("⚠️ Please enter your ScrapingBee API key to use proxy")
+    
     scrape_button = st.button("🚀 Start Scraping", type="primary", use_container_width=True)
 
 # Initialize session state
@@ -548,6 +638,12 @@ if scrape_button and not st.session_state.scraping:
             api_pattern = plp_to_api(plp_url)
             st.info(f"🔗 API Pattern: `{api_pattern}`")
             
+            # Show proxy status
+            if use_scrapingbee and scrapingbee_api_key:
+                st.success("🔄 Using ScrapingBee Proxy")
+            else:
+                st.info("🌐 Using Direct Connection")
+            
             # Use test mode if enabled
             actual_target = 10 if test_mode else target_count
             if test_mode:
@@ -566,7 +662,14 @@ if scrape_button and not st.session_state.scraping:
                 status_text = status_placeholder.empty()
                 
                 # Scrape
-                df = scrape_from_plp(plp_url, actual_target, progress_bar, status_text)
+                df = scrape_from_plp(
+                    plp_url, 
+                    actual_target, 
+                    progress_bar, 
+                    status_text,
+                    use_scrapingbee=use_scrapingbee if use_scrapingbee and scrapingbee_api_key else False,
+                    scrapingbee_api_key=scrapingbee_api_key if use_scrapingbee and scrapingbee_api_key else None
+                )
                 
                 # Store results in session state
                 st.session_state.scrape_results = df
