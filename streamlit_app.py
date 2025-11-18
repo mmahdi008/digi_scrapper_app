@@ -679,46 +679,8 @@ if scrape_button and not st.session_state.scraping:
                 progress_placeholder.empty()
                 status_placeholder.empty()
                 
-                # Display results immediately
-                if len(df) > 0:
-                    st.success(f"✅ Successfully scraped {len(df)} products!")
-                    st.markdown("---")
-                    
-                    # Display results
-                    st.subheader("📊 Results")
-                    st.dataframe(df, width='stretch', height=400)
-                    
-                    # Download button - CSV is only generated when button is clicked
-                    def generate_csv():
-                        return df.to_csv(index=False, encoding="utf-8-sig")
-                    
-                    csv_data = generate_csv()
-                    st.download_button(
-                        label="📥 Download CSV (Click to download)",
-                        data=csv_data,
-                        file_name=f"digikala_products_{len(df)}.csv",
-                        mime="text/csv",
-                        width='stretch',
-                        key=f"download_immediate_{len(df)}",
-                        help="Click this button to download the results as CSV"
-                    )
-                    
-                    # Statistics
-                    st.markdown("---")
-                    st.subheader("📈 Statistics")
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("Total Products", len(df))
-                    with col2:
-                        st.metric("Unique Brands", df["brand"].nunique())
-                    with col3:
-                        avg_price = df["selling_price"].mean()
-                        st.metric("Avg Price", f"{avg_price:,.0f}" if pd.notna(avg_price) else "N/A")
-                    with col4:
-                        promotions = df["is_promotion"].sum()
-                        st.metric("Promotions", promotions)
-                else:
-                    st.warning("⚠️ No products were found. Please check the URL and try again.")
+                # Trigger rerun to display results from session state
+                st.rerun()
                 
             except Exception as scrape_error:
                 st.session_state.scrape_error = str(scrape_error)
