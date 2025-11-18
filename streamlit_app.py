@@ -14,8 +14,8 @@ st.set_page_config(
 
 # ========== CONFIG ==========
 SLEEP_BETWEEN = 0.25
-TIMEOUT = 20
-RETRIES = 3
+TIMEOUT = 15  # Reduced timeout for Streamlit Cloud
+RETRIES = 2  # Reduced retries to fail faster
 # ============================
 
 # Helper functions
@@ -522,43 +522,67 @@ with st.sidebar:
         step=10,
         help="Number of products to scrape"
     )
+    test_mode = st.checkbox("🧪 Test Mode (scrape only 10 products)", value=False, help="Use this to test if scraping works")
     scrape_button = st.button("🚀 Start Scraping", type="primary", use_container_width=True)
 
+# Initialize session state
+if 'scraping' not in st.session_state:
+    st.session_state.scraping = False
+if 'scrape_results' not in st.session_state:
+    st.session_state.scrape_results = None
+if 'scrape_error' not in st.session_state:
+    st.session_state.scrape_error = None
+
 # Main content area
-if scrape_button:
+if scrape_button and not st.session_state.scraping:
     if not plp_url:
         st.error("❌ Please enter a Digikala URL")
     else:
+        # Reset previous results
+        st.session_state.scrape_results = None
+        st.session_state.scrape_error = None
+        st.session_state.scraping = True
+        
         try:
             # Show API pattern
             api_pattern = plp_to_api(plp_url)
             st.info(f"🔗 API Pattern: `{api_pattern}`")
             
+            # Use test mode if enabled
+            actual_target = 10 if test_mode else target_count
+            if test_mode:
+                st.warning("🧪 Test Mode: Scraping only 10 products")
+            
             # Progress tracking
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+            progress_placeholder = st.empty()
+            status_placeholder = st.empty()
             
-            # Create a status log area
-            status_log = st.empty()
+            # Show initial message
+            status_placeholder.info("🚀 Starting scraping... Please wait, this may take a minute or two.")
             
-            # Scrape with better error visibility
             try:
-                # Initialize status
-                status_text.markdown("**🚀 Starting scraping...**")
+                # Create progress bar and status
+                progress_bar = progress_placeholder.progress(0)
+                status_text = status_placeholder.empty()
                 
-                df = scrape_from_plp(plp_url, target_count, progress_bar, status_text)
+                # Scrape
+                df = scrape_from_plp(plp_url, actual_target, progress_bar, status_text)
                 
-                # Clear the status and show results
-                status_text.empty()
-                progress_bar.empty()
+                # Store results in session state
+                st.session_state.scrape_results = df
+                st.session_state.scraping = False
                 
-                # Results
-                st.success(f"✅ Successfully scraped {len(df)} products!")
-                st.markdown("---")
+                # Clear placeholders
+                progress_placeholder.empty()
+                status_placeholder.empty()
                 
-                # Display results
-                st.subheader("📊 Results")
+                # Display results immediately
                 if len(df) > 0:
+                    st.success(f"✅ Successfully scraped {len(df)} products!")
+                    st.markdown("---")
+                    
+                    # Display results
+                    st.subheader("📊 Results")
                     st.dataframe(df, use_container_width=True, height=400)
                     
                     # Download button
@@ -587,23 +611,71 @@ if scrape_button:
                         st.metric("Promotions", promotions)
                 else:
                     st.warning("⚠️ No products were found. Please check the URL and try again.")
-                    
+                
             except Exception as scrape_error:
-                status_text.empty()
-                progress_bar.empty()
-                st.error(f"❌ Scraping Error: {str(scrape_error)}")
-                st.exception(scrape_error)
-                # Still try to show partial results if any were collected
-                try:
-                    if 'df' in locals() and len(df) > 0:
-                        st.info(f"⚠️ Partial results: {len(df)} products collected before error")
-                        st.dataframe(df)
-                except:
-                    pass
+                st.session_state.scrape_error = str(scrape_error)
+                st.session_state.scraping = False
+                progress_placeholder.empty()
+                status_placeholder.empty()
+                # Don't rerun here, let the outer exception handler display the error
                 
         except Exception as e:
-            st.error(f"❌ Error: {str(e)}")
-            st.exception(e)
+            st.session_state.scrape_error = str(e)
+            st.session_state.scraping = False
+            progress_placeholder.empty()
+            status_placeholder.empty()
+
+# Display results if available
+if st.session_state.scrape_results is not None:
+    df = st.session_state.scrape_results
+    
+    if len(df) > 0:
+        st.success(f"✅ Successfully scraped {len(df)} products!")
+        st.markdown("---")
+        
+        # Display results
+        st.subheader("📊 Results")
+        st.dataframe(df, use_container_width=True, height=400)
+        
+        # Download button
+        csv = df.to_csv(index=False, encoding="utf-8-sig")
+        st.download_button(
+            label="📥 Download CSV",
+            data=csv,
+            file_name=f"digikala_products_{len(df)}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+        
+        # Statistics
+        st.markdown("---")
+        st.subheader("📈 Statistics")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Products", len(df))
+        with col2:
+            st.metric("Unique Brands", df["brand"].nunique())
+        with col3:
+            avg_price = df["selling_price"].mean()
+            st.metric("Avg Price", f"{avg_price:,.0f}" if pd.notna(avg_price) else "N/A")
+        with col4:
+            promotions = df["is_promotion"].sum()
+            st.metric("Promotions", promotions)
+    else:
+        st.warning("⚠️ No products were found. Please check the URL and try again.")
+    
+    # Reset button
+    if st.button("🔄 Scrape Again", use_container_width=True):
+        st.session_state.scrape_results = None
+        st.session_state.scrape_error = None
+        st.rerun()
+
+elif st.session_state.scrape_error:
+    st.error(f"❌ Error occurred: {st.session_state.scrape_error}")
+    if st.button("🔄 Try Again", use_container_width=True):
+        st.session_state.scrape_error = None
+        st.session_state.scraping = False
+        st.rerun()
 else:
     # Instructions
     st.info("""
