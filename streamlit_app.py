@@ -688,15 +688,19 @@ if scrape_button and not st.session_state.scraping:
                     st.subheader("📊 Results")
                     st.dataframe(df, width='stretch', height=400)
                     
-                    # Download button
-                    csv = df.to_csv(index=False, encoding="utf-8-sig")
+                    # Download button - CSV is only generated when button is clicked
+                    def generate_csv():
+                        return df.to_csv(index=False, encoding="utf-8-sig")
+                    
+                    csv_data = generate_csv()
                     st.download_button(
-                        label="📥 Download CSV",
-                        data=csv,
+                        label="📥 Download CSV (Click to download)",
+                        data=csv_data,
                         file_name=f"digikala_products_{len(df)}.csv",
                         mime="text/csv",
                         width='stretch',
-                        key=f"download_immediate_{len(df)}"
+                        key=f"download_immediate_{len(df)}",
+                        help="Click this button to download the results as CSV"
                     )
                     
                     # Statistics
@@ -741,15 +745,19 @@ if st.session_state.scrape_results is not None:
         st.subheader("📊 Results")
         st.dataframe(df, width='stretch', height=400)
         
-        # Download button
-        csv = df.to_csv(index=False, encoding="utf-8-sig")
+        # Download button - CSV is only generated when button is clicked
+        def generate_csv():
+            return df.to_csv(index=False, encoding="utf-8-sig")
+        
+        csv_data = generate_csv()
         st.download_button(
-            label="📥 Download CSV",
-            data=csv,
+            label="📥 Download CSV (Click to download)",
+            data=csv_data,
             file_name=f"digikala_products_{len(df)}.csv",
             mime="text/csv",
             width='stretch',
-            key=f"download_session_{len(df)}"
+            key=f"download_session_{len(df)}",
+            help="Click this button to download the results as CSV"
         )
         
         # Statistics
