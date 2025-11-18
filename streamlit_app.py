@@ -613,7 +613,7 @@ with st.sidebar:
             if not scrapingbee_api_key:
                 st.warning("⚠️ Please enter your ScrapingBee API key to use proxy")
     
-    scrape_button = st.button("🚀 Start Scraping", type="primary", use_container_width=True)
+    scrape_button = st.button("🚀 Start Scraping", type="primary", width='stretch')
 
 # Initialize session state
 if 'scraping' not in st.session_state:
@@ -686,7 +686,7 @@ if scrape_button and not st.session_state.scraping:
                     
                     # Display results
                     st.subheader("📊 Results")
-                    st.dataframe(df, use_container_width=True, height=400)
+                    st.dataframe(df, width='stretch', height=400)
                     
                     # Download button
                     csv = df.to_csv(index=False, encoding="utf-8-sig")
@@ -695,7 +695,8 @@ if scrape_button and not st.session_state.scraping:
                         data=csv,
                         file_name=f"digikala_products_{len(df)}.csv",
                         mime="text/csv",
-                        use_container_width=True
+                        width='stretch',
+                        key=f"download_immediate_{len(df)}"
                     )
                     
                     # Statistics
@@ -738,7 +739,7 @@ if st.session_state.scrape_results is not None:
         
         # Display results
         st.subheader("📊 Results")
-        st.dataframe(df, use_container_width=True, height=400)
+        st.dataframe(df, width='stretch', height=400)
         
         # Download button
         csv = df.to_csv(index=False, encoding="utf-8-sig")
@@ -747,7 +748,8 @@ if st.session_state.scrape_results is not None:
             data=csv,
             file_name=f"digikala_products_{len(df)}.csv",
             mime="text/csv",
-            use_container_width=True
+            width='stretch',
+            key=f"download_session_{len(df)}"
         )
         
         # Statistics
@@ -768,14 +770,14 @@ if st.session_state.scrape_results is not None:
         st.warning("⚠️ No products were found. Please check the URL and try again.")
     
     # Reset button
-    if st.button("🔄 Scrape Again", use_container_width=True):
+    if st.button("🔄 Scrape Again", width='stretch', key="scrape_again_btn"):
         st.session_state.scrape_results = None
         st.session_state.scrape_error = None
         st.rerun()
 
 elif st.session_state.scrape_error:
     st.error(f"❌ Error occurred: {st.session_state.scrape_error}")
-    if st.button("🔄 Try Again", use_container_width=True):
+    if st.button("🔄 Try Again", width='stretch', key="try_again_btn"):
         st.session_state.scrape_error = None
         st.session_state.scraping = False
         st.rerun()
