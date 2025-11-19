@@ -138,13 +138,14 @@ def _safe_get(d, *path, default=None):
             return default
     return cur
 
-def _get_json(url, use_scrapingbee=False, scrapingbee_api_keys=None, api_key_stats=None):
+def _get_json(url, use_scrapingbee=False, scrapingbee_api_keys=None, api_key_stats=None, fallback_to_direct=True):
     """
     Fetch JSON data from URL.
     If use_scrapingbee=True and api_keys provided, uses ScrapingBee proxy service.
     scrapingbee_api_keys can be a single key (str) or a list of keys (list).
     Randomly selects a key from the list for each request.
     api_key_stats: dict to track usage statistics (mutated in place)
+    fallback_to_direct: If True, fall back to direct connection if all ScrapingBee keys fail
     """
     if use_scrapingbee and scrapingbee_api_keys:
         # Normalize to list if single key provided
@@ -154,105 +155,127 @@ def _get_json(url, use_scrapingbee=False, scrapingbee_api_keys=None, api_key_sta
             api_keys = [k for k in scrapingbee_api_keys if k and k.strip()]
         
         if not api_keys:
+            if fallback_to_direct:
+                print("⚠️ No valid ScrapingBee API keys provided. Falling back to direct connection...")
+                return _get_json(url, use_scrapingbee=False, scrapingbee_api_keys=None, api_key_stats=None, fallback_to_direct=False)
             raise RuntimeError("No valid ScrapingBee API keys provided")
         
         # Use ScrapingBee API
         scrapingbee_url = "https://app.scrapingbee.com/api/v1/"
         
-        # Randomly select an API key for this request
-        selected_key = random.choice(api_keys)
-        print(f"Using ScrapingBee API key: {selected_key[:10]}... (selected from {len(api_keys)} keys)")  # Debug log
-        
-        # Track API key usage
-        if api_key_stats is not None:
-            if selected_key not in api_key_stats:
-                api_key_stats[selected_key] = {"used": 0, "success": 0, "failed": 0, "rate_limited": 0}
-            api_key_stats[selected_key]["used"] += 1
-        
-        params = {
-            'api_key': selected_key,
-            'url': url,
-            'render_js': 'false',  # Set to 'true' if you need JavaScript rendering
-            'premium_proxy': 'true',  # Use premium proxies
-            'country_code': 'us'  # Optional: specify country
-        }
-        
-        headers = {"Accept": "application/json"}
+        # Try all available keys before giving up
+        failed_keys = []
         last_err = None
         
         print(f"Fetching URL via ScrapingBee: {url}")  # Debug log
-        for attempt in range(RETRIES):
-            try:
-                print(f"Attempt {attempt + 1}/{RETRIES} (via ScrapingBee)")  # Debug log
-                r = requests.get(scrapingbee_url, params=params, headers=headers, timeout=TIMEOUT)
-                print(f"Response status: {r.status_code}")  # Debug log
-                
-                if r.status_code == 200:
-                    # Track successful request
-                    if api_key_stats is not None and selected_key in api_key_stats:
-                        api_key_stats[selected_key]["success"] += 1
-                    
-                    # ScrapingBee returns the scraped content in response.text
-                    # The content is the actual response from the target URL
-                    try:
-                        # Try to parse as JSON directly
-                        return r.json()
-                    except ValueError:
-                        # If not JSON, the response might be text/HTML
-                        # Try to parse the text content as JSON
-                        try:
-                            import json
-                            return json.loads(r.text)
-                        except:
-                            # If still not JSON, return None and let the caller handle it
-                            print(f"⚠️ ScrapingBee returned non-JSON content. Content type: {r.headers.get('content-type', 'unknown')}")
-                            print(f"First 200 chars: {r.text[:200]}")
-                            raise RuntimeError("ScrapingBee returned non-JSON content. The target URL might not be returning JSON.")
-                elif r.status_code == 403:
-                    # Track rate limit
-                    if api_key_stats is not None and selected_key in api_key_stats:
-                        api_key_stats[selected_key]["rate_limited"] += 1
-                    
-                    # Rate limit or invalid key - try another key if available
-                    if len(api_keys) > 1:
-                        print(f"⚠️ HTTP 403 with key {selected_key[:10]}... Trying another key...")
-                        # Remove the failed key from the list for this request
-                        remaining_keys = [k for k in api_keys if k != selected_key]
-                        if remaining_keys:
-                            selected_key = random.choice(remaining_keys)
-                            params['api_key'] = selected_key
-                            print(f"Switched to key: {selected_key[:10]}...")
-                            
-                            # Track usage of new key
-                            if api_key_stats is not None:
-                                if selected_key not in api_key_stats:
-                                    api_key_stats[selected_key] = {"used": 0, "success": 0, "failed": 0, "rate_limited": 0}
-                                api_key_stats[selected_key]["used"] += 1
-                            
-                            continue  # Retry with new key
-                    last_err = f"HTTP 403 - ScrapingBee API key may be invalid or quota exceeded"
-                    print(f"⚠️ ScrapingBee Error: {last_err}")  # Debug log
-                else:
-                    last_err = f"HTTP {r.status_code}"
-                    print(f"⚠️ ScrapingBee Error: {last_err}")  # Debug log
-            except requests.exceptions.Timeout as e:
-                last_err = f"Timeout: {str(e)}"
-                print(f"Timeout error: {e}")  # Debug log
-            except requests.exceptions.RequestException as e:
-                last_err = f"Request error: {str(e)}"
-                print(f"Request error: {e}")  # Debug log
-            except Exception as e:
-                last_err = str(e)
-                print(f"Unexpected error: {e}")  # Debug log
-            if attempt < RETRIES - 1:
-                time.sleep(0.7)
-        # Track failed request
-        if api_key_stats is not None and selected_key in api_key_stats:
-            api_key_stats[selected_key]["failed"] += 1
         
-        error_msg = f"Failed to fetch {url} via ScrapingBee. {last_err}"
-        print(f"ERROR: {error_msg}")  # Debug log
-        raise RuntimeError(error_msg)
+        # Try each key (with retries per key)
+        for key_idx, selected_key in enumerate(api_keys):
+            if selected_key in failed_keys:
+                continue  # Skip keys that already failed with 403
+                
+            print(f"Trying ScrapingBee API key {key_idx + 1}/{len(api_keys)}: {selected_key[:10]}...")  # Debug log
+            
+            # Track API key usage
+            if api_key_stats is not None:
+                if selected_key not in api_key_stats:
+                    api_key_stats[selected_key] = {"used": 0, "success": 0, "failed": 0, "rate_limited": 0}
+                api_key_stats[selected_key]["used"] += 1
+            
+            params = {
+                'api_key': selected_key,
+                'url': url,
+                'render_js': 'false',  # Set to 'true' if you need JavaScript rendering
+                'premium_proxy': 'true',  # Use premium proxies
+                'country_code': 'us'  # Optional: specify country
+            }
+            
+            headers = {"Accept": "application/json"}
+            
+            # Retry with this key
+            for attempt in range(RETRIES):
+                try:
+                    print(f"  Attempt {attempt + 1}/{RETRIES} (via ScrapingBee)")  # Debug log
+                    r = requests.get(scrapingbee_url, params=params, headers=headers, timeout=TIMEOUT)
+                    print(f"  Response status: {r.status_code}")  # Debug log
+                    
+                    if r.status_code == 200:
+                        # Track successful request
+                        if api_key_stats is not None and selected_key in api_key_stats:
+                            api_key_stats[selected_key]["success"] += 1
+                        
+                        # ScrapingBee returns the scraped content in response.text
+                        # The content is the actual response from the target URL
+                        try:
+                            # Try to parse as JSON directly
+                            return r.json()
+                        except ValueError:
+                            # If not JSON, the response might be text/HTML
+                            # Try to parse the text content as JSON
+                            try:
+                                import json
+                                return json.loads(r.text)
+                            except:
+                                # If still not JSON, return None and let the caller handle it
+                                print(f"⚠️ ScrapingBee returned non-JSON content. Content type: {r.headers.get('content-type', 'unknown')}")
+                                print(f"First 200 chars: {r.text[:200]}")
+                                raise RuntimeError("ScrapingBee returned non-JSON content. The target URL might not be returning JSON.")
+                    elif r.status_code == 403:
+                        # Track rate limit
+                        if api_key_stats is not None and selected_key in api_key_stats:
+                            api_key_stats[selected_key]["rate_limited"] += 1
+                        
+                        last_err = f"HTTP 403 - API key {selected_key[:10]}... may be invalid or quota exceeded"
+                        print(f"⚠️ {last_err}")  # Debug log
+                        failed_keys.append(selected_key)
+                        
+                        # Track failed request
+                        if api_key_stats is not None and selected_key in api_key_stats:
+                            api_key_stats[selected_key]["failed"] += 1
+                        
+                        # Try next key if available
+                        break  # Break out of retry loop, try next key
+                    else:
+                        last_err = f"HTTP {r.status_code}"
+                        print(f"⚠️ ScrapingBee Error: {last_err}")  # Debug log
+                        if attempt < RETRIES - 1:
+                            time.sleep(0.7)
+                except requests.exceptions.Timeout as e:
+                    last_err = f"Timeout: {str(e)}"
+                    print(f"Timeout error: {e}")  # Debug log
+                    if attempt < RETRIES - 1:
+                        time.sleep(0.7)
+                except requests.exceptions.RequestException as e:
+                    last_err = f"Request error: {str(e)}"
+                    print(f"Request error: {e}")  # Debug log
+                    if attempt < RETRIES - 1:
+                        time.sleep(0.7)
+                except Exception as e:
+                    last_err = str(e)
+                    print(f"Unexpected error: {e}")  # Debug log
+                    if attempt < RETRIES - 1:
+                        time.sleep(0.7)
+            
+            # If we got here and last attempt was successful, we would have returned
+            # So this key failed, continue to next key
+            if selected_key not in failed_keys:
+                # Track failed request (non-403 failure)
+                if api_key_stats is not None and selected_key in api_key_stats:
+                    api_key_stats[selected_key]["failed"] += 1
+        
+        # All keys failed - try fallback to direct connection
+        if fallback_to_direct:
+            print(f"⚠️ All {len(api_keys)} ScrapingBee API keys failed. Falling back to direct connection...")
+            try:
+                return _get_json(url, use_scrapingbee=False, scrapingbee_api_keys=None, api_key_stats=None, fallback_to_direct=False)
+            except Exception as direct_err:
+                error_msg = f"Failed to fetch {url} via ScrapingBee (all {len(api_keys)} keys failed) and direct connection also failed. Last ScrapingBee error: {last_err}. Direct connection error: {str(direct_err)}"
+                print(f"ERROR: {error_msg}")  # Debug log
+                raise RuntimeError(error_msg)
+        else:
+            error_msg = f"Failed to fetch {url} via ScrapingBee. All {len(api_keys)} API keys failed. Last error: {last_err}"
+            print(f"ERROR: {error_msg}")  # Debug log
+            raise RuntimeError(error_msg)
     
     else:
         # Original direct method
