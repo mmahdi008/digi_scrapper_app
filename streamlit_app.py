@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import time
 import pandas as pd
+import random
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from collections import deque
 
@@ -137,17 +138,32 @@ def _safe_get(d, *path, default=None):
             return default
     return cur
 
-def _get_json(url, use_scrapingbee=False, scrapingbee_api_key=None):
+def _get_json(url, use_scrapingbee=False, scrapingbee_api_keys=None):
     """
     Fetch JSON data from URL.
-    If use_scrapingbee=True and api_key provided, uses ScrapingBee proxy service.
+    If use_scrapingbee=True and api_keys provided, uses ScrapingBee proxy service.
+    scrapingbee_api_keys can be a single key (str) or a list of keys (list).
+    Randomly selects a key from the list for each request.
     """
-    if use_scrapingbee and scrapingbee_api_key:
+    if use_scrapingbee and scrapingbee_api_keys:
+        # Normalize to list if single key provided
+        if isinstance(scrapingbee_api_keys, str):
+            api_keys = [scrapingbee_api_keys]
+        else:
+            api_keys = [k for k in scrapingbee_api_keys if k and k.strip()]
+        
+        if not api_keys:
+            raise RuntimeError("No valid ScrapingBee API keys provided")
+        
         # Use ScrapingBee API
         scrapingbee_url = "https://app.scrapingbee.com/api/v1/"
         
+        # Randomly select an API key for this request
+        selected_key = random.choice(api_keys)
+        print(f"Using ScrapingBee API key: {selected_key[:10]}... (selected from {len(api_keys)} keys)")  # Debug log
+        
         params = {
-            'api_key': scrapingbee_api_key,
+            'api_key': selected_key,
             'url': url,
             'render_js': 'false',  # Set to 'true' if you need JavaScript rendering
             'premium_proxy': 'true',  # Use premium proxies
@@ -182,6 +198,16 @@ def _get_json(url, use_scrapingbee=False, scrapingbee_api_key=None):
                             print(f"First 200 chars: {r.text[:200]}")
                             raise RuntimeError("ScrapingBee returned non-JSON content. The target URL might not be returning JSON.")
                 elif r.status_code == 403:
+                    # Rate limit or invalid key - try another key if available
+                    if len(api_keys) > 1:
+                        print(f"⚠️ HTTP 403 with key {selected_key[:10]}... Trying another key...")
+                        # Remove the failed key from the list for this request
+                        remaining_keys = [k for k in api_keys if k != selected_key]
+                        if remaining_keys:
+                            selected_key = random.choice(remaining_keys)
+                            params['api_key'] = selected_key
+                            print(f"Switched to key: {selected_key[:10]}...")
+                            continue  # Retry with new key
                     last_err = f"HTTP 403 - ScrapingBee API key may be invalid or quota exceeded"
                     print(f"⚠️ ScrapingBee Error: {last_err}")  # Debug log
                 else:
@@ -432,10 +458,13 @@ def _row(prod):
         "discount_percent": _extract_discount_percent(prod),
     }
 
-def scrape_from_plp(plp_url, target_count, progress_bar, status_text, use_scrapingbee=False, scrapingbee_api_key=None):
+def scrape_from_plp(plp_url, target_count, progress_bar, status_text, use_scrapingbee=False, scrapingbee_api_keys=None):
     print(f"Starting scrape for URL: {plp_url}, target: {target_count}")  # Debug log
     if use_scrapingbee:
-        print(f"Using ScrapingBee proxy")  # Debug log
+        if isinstance(scrapingbee_api_keys, list):
+            print(f"Using ScrapingBee proxy with {len(scrapingbee_api_keys)} API keys")  # Debug log
+        else:
+            print(f"Using ScrapingBee proxy")  # Debug log
     api_pattern = plp_to_api(plp_url)
     print(f"API pattern: {api_pattern}")  # Debug log
     all_rows = []
@@ -456,7 +485,7 @@ def scrape_from_plp(plp_url, target_count, progress_bar, status_text, use_scrapi
         status_text.markdown(f"**📄 Fetching page {page}...** ({collected}/{target_count} products collected)")
         
         try:
-            data = _get_json(page_url, use_scrapingbee=use_scrapingbee, scrapingbee_api_key=scrapingbee_api_key)
+            data = _get_json(page_url, use_scrapingbee=use_scrapingbee, scrapingbee_api_keys=scrapingbee_api_keys)
             print(f"Got data, looking for products...")  # Debug log
             
             # Check pagination metadata if available
@@ -596,22 +625,66 @@ with st.sidebar:
     st.subheader("🔄 Proxy Settings")
     use_scrapingbee = st.checkbox("Use ScrapingBee Proxy", value=False, help="Enable to use ScrapingBee proxy service (helps avoid IP blocking)")
     
-    scrapingbee_api_key = None
+    scrapingbee_api_keys = None
     if use_scrapingbee:
         # Try to get from secrets first (for production)
-        if 'scrapingbee' in st.secrets and 'api_key' in st.secrets.scrapingbee:
-            scrapingbee_api_key = st.secrets.scrapingbee.api_key
-            st.success("✅ Using ScrapingBee API key from secrets")
+        if 'scrapingbee' in st.secrets:
+            if 'api_keys' in st.secrets.scrapingbee:
+                # Multiple keys from secrets (as list or newline-separated string)
+                api_keys_from_secrets = st.secrets.scrapingbee.api_keys
+                if isinstance(api_keys_from_secrets, str):
+                    # If single string, split by newline
+                    scrapingbee_api_keys = [k.strip() for k in api_keys_from_secrets.split('\n') if k.strip()]
+                elif isinstance(api_keys_from_secrets, list):
+                    scrapingbee_api_keys = [k.strip() for k in api_keys_from_secrets if k and k.strip()]
+                else:
+                    scrapingbee_api_keys = [str(api_keys_from_secrets).strip()]
+                st.success(f"✅ Using {len(scrapingbee_api_keys)} ScrapingBee API key(s) from secrets")
+            elif 'api_key' in st.secrets.scrapingbee:
+                # Single key from secrets (backward compatibility)
+                scrapingbee_api_keys = [st.secrets.scrapingbee.api_key]
+                st.success("✅ Using ScrapingBee API key from secrets")
         else:
-            # Allow manual input
-            scrapingbee_api_key = st.text_input(
-                "ScrapingBee API Key",
-                type="password",
-                placeholder="Enter your ScrapingBee API key",
-                help="Get your API key from https://www.scrapingbee.com/"
+            # Allow manual input - multiple keys
+            st.info("💡 Enter multiple API keys (one per line) to rotate through them and handle rate limits")
+            
+            # Default API keys (pre-populated)
+            default_api_keys = """IWI52LZXR6FOQ9VWQFX4BRWQUX9DV4PZX6BLPKL02JVGZF8D6X4PUTDYZVBHVFIKW9EOKNUVK9799S74
+DOFLGDGT60O6F63AS517BUX1IZ07LD2ZW5GKXYMLFQIV9VOE633RC5CRHF627Z77M8ESW5U6MYX4FUFI
+8UM4C0I0C9UPTQF1CPQFZV55JQDUR6VBTAYCGPV3PAEC11T0JNKZLPXEOM9PTFODNMJDJ5TE7QAKCMQZ
+230CG44C4PA97SSKCMYVIYJRO0AUIQX2R0MHH6YNF7FGTRYZRIJSAMZP5F0YVO4VPSG0UBOC9EGF7B8W
+H8VQB1IY6SZIDNWXDJMG2KGNICAY0JUC5ACZ7O9W1SCN0PV62C5LBBIDLSUVJGOS44QA7P7HPN5UOOV4
+X3L8F7TA6FAD0Q2VLEAT4KPGHW1J7U14C82T7YJ5P50SLCQEZZ6WGJOHDBBMRD7AC5GJI112D246X9IR
+OAAPVHW0EEAM3LM5N9JM2LTBCP5HDLN0HYB4BRGOD419630WLM91G7XTWY4II50S8762OCT3PYPS2DJS
+3II9J5E17BIRYUM6YBFO3RA1U4GQ3NYE4FTHBVKU9NR9T0HV4Q5IZCUNI1ZPBJ0OPXI1FDJFK2BSJY0Q
+JOJMSS0RYSK54R3UJVX0761APDUWRYN33GZOJLJSX8DLI238XIAY8N42Z57RSIQHBO9IKH7X6MP6WQE0
+4AK7Z451NOB9X3SLE14A9SI719UW8D0KKN7P7R2Y5J17LJVAQGXW83NH7IBLNWZSJIMK2P8DQUKSTPEJ"""
+            
+            # Initialize session state for API keys if not set
+            if 'scrapingbee_api_keys_input' not in st.session_state:
+                st.session_state.scrapingbee_api_keys_input = default_api_keys
+            
+            api_keys_input = st.text_area(
+                "ScrapingBee API Keys (one per line)",
+                height=200,
+                value=st.session_state.scrapingbee_api_keys_input,
+                help="Enter multiple API keys separated by newlines. The program will randomly rotate through them. Get your API keys from https://www.scrapingbee.com/"
             )
-            if not scrapingbee_api_key:
-                st.warning("⚠️ Please enter your ScrapingBee API key to use proxy")
+            
+            # Update session state when user changes the input
+            if api_keys_input != st.session_state.scrapingbee_api_keys_input:
+                st.session_state.scrapingbee_api_keys_input = api_keys_input
+            if api_keys_input:
+                # Parse multiple keys (split by newline, filter empty)
+                scrapingbee_api_keys = [k.strip() for k in api_keys_input.split('\n') if k.strip()]
+                if scrapingbee_api_keys:
+                    st.success(f"✅ {len(scrapingbee_api_keys)} API key(s) loaded")
+                else:
+                    st.warning("⚠️ Please enter at least one valid API key")
+                    scrapingbee_api_keys = None
+            else:
+                st.warning("⚠️ Please enter your ScrapingBee API key(s) to use proxy")
+                scrapingbee_api_keys = None
     
     scrape_button = st.button("🚀 Start Scraping", type="primary", width='stretch')
 
@@ -639,8 +712,11 @@ if scrape_button and not st.session_state.scraping:
             st.info(f"🔗 API Pattern: `{api_pattern}`")
             
             # Show proxy status
-            if use_scrapingbee and scrapingbee_api_key:
-                st.success("🔄 Using ScrapingBee Proxy")
+            if use_scrapingbee and scrapingbee_api_keys:
+                if isinstance(scrapingbee_api_keys, list):
+                    st.success(f"🔄 Using ScrapingBee Proxy ({len(scrapingbee_api_keys)} API keys)")
+                else:
+                    st.success("🔄 Using ScrapingBee Proxy")
             else:
                 st.info("🌐 Using Direct Connection")
             
@@ -667,8 +743,8 @@ if scrape_button and not st.session_state.scraping:
                     actual_target, 
                     progress_bar, 
                     status_text,
-                    use_scrapingbee=use_scrapingbee if use_scrapingbee and scrapingbee_api_key else False,
-                    scrapingbee_api_key=scrapingbee_api_key if use_scrapingbee and scrapingbee_api_key else None
+                    use_scrapingbee=use_scrapingbee if use_scrapingbee and scrapingbee_api_keys else False,
+                    scrapingbee_api_keys=scrapingbee_api_keys if use_scrapingbee and scrapingbee_api_keys else None
                 )
                 
                 # Store results in session state
