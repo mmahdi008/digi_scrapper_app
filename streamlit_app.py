@@ -206,20 +206,45 @@ def _get_json(url, use_scrapingbee=False, scrapingbee_api_keys=None, api_key_sta
                         
                         # ScrapingBee returns the scraped content in response.text
                         # The content is the actual response from the target URL
+                        content_type = r.headers.get('content-type', '').lower()
+                        print(f"  Response content-type: {content_type}")
+                        print(f"  Response length: {len(r.text)} chars")
+                        
+                        # Check if response looks like JSON
+                        text_preview = r.text[:500] if len(r.text) > 500 else r.text
+                        print(f"  Response preview: {text_preview}")
+                        
                         try:
                             # Try to parse as JSON directly
-                            return r.json()
-                        except ValueError:
+                            json_data = r.json()
+                            print(f"  ✅ Successfully parsed JSON response")
+                            return json_data
+                        except ValueError as json_err:
                             # If not JSON, the response might be text/HTML
                             # Try to parse the text content as JSON
                             try:
                                 import json
-                                return json.loads(r.text)
+                                json_data = json.loads(r.text)
+                                print(f"  ✅ Successfully parsed JSON from text")
+                                return json_data
                             except:
-                                # If still not JSON, return None and let the caller handle it
-                                print(f"⚠️ ScrapingBee returned non-JSON content. Content type: {r.headers.get('content-type', 'unknown')}")
-                                print(f"First 200 chars: {r.text[:200]}")
-                                raise RuntimeError("ScrapingBee returned non-JSON content. The target URL might not be returning JSON.")
+                                # If still not JSON, this might be an HTML error page
+                                # Check if it's an error message from ScrapingBee
+                                if 'scrapingbee' in r.text.lower() or 'error' in r.text.lower()[:200].lower():
+                                    error_msg = f"ScrapingBee returned an error page instead of JSON. Content preview: {text_preview[:200]}"
+                                    print(f"  ⚠️ {error_msg}")
+                                    last_err = error_msg
+                                    # Mark this key as failed and try next
+                                    if selected_key not in failed_keys:
+                                        failed_keys.append(selected_key)
+                                    if api_key_stats is not None and selected_key in api_key_stats:
+                                        api_key_stats[selected_key]["failed"] += 1
+                                    break  # Try next key
+                                else:
+                                    # If still not JSON, return None and let the caller handle it
+                                    error_msg = f"ScrapingBee returned non-JSON content. Content type: {content_type}. First 200 chars: {text_preview[:200]}"
+                                    print(f"  ⚠️ {error_msg}")
+                                    raise RuntimeError(error_msg)
                     elif r.status_code == 403:
                         # Track rate limit
                         if api_key_stats is not None and selected_key in api_key_stats:
@@ -266,8 +291,13 @@ def _get_json(url, use_scrapingbee=False, scrapingbee_api_keys=None, api_key_sta
         # All keys failed - try fallback to direct connection
         if fallback_to_direct:
             print(f"⚠️ All {len(api_keys)} ScrapingBee API keys failed. Falling back to direct connection...")
+            print(f"   Failed keys: {[k[:10] + '...' for k in failed_keys]}")
+            print(f"   Last error: {last_err}")
             try:
-                return _get_json(url, use_scrapingbee=False, scrapingbee_api_keys=None, api_key_stats=None, fallback_to_direct=False)
+                print("   Attempting direct connection...")
+                result = _get_json(url, use_scrapingbee=False, scrapingbee_api_keys=None, api_key_stats=None, fallback_to_direct=False)
+                print("   ✅ Direct connection successful!")
+                return result
             except Exception as direct_err:
                 error_msg = f"Failed to fetch {url} via ScrapingBee (all {len(api_keys)} keys failed) and direct connection also failed. Last ScrapingBee error: {last_err}. Direct connection error: {str(direct_err)}"
                 print(f"ERROR: {error_msg}")  # Debug log
@@ -540,6 +570,16 @@ def scrape_from_plp(plp_url, target_count, progress_bar, status_text, use_scrapi
         try:
             data = _get_json(page_url, use_scrapingbee=use_scrapingbee, scrapingbee_api_keys=scrapingbee_api_keys, api_key_stats=api_key_stats)
             print(f"Got data, looking for products...")  # Debug log
+            
+            # Validate that we got valid data
+            if data is None:
+                status_text.markdown(f"**⚠️ Received None data from API on page {page}. Stopping.**")
+                break
+            
+            if not isinstance(data, dict):
+                status_text.markdown(f"**⚠️ Received invalid data type ({type(data)}) from API on page {page}. Stopping.**")
+                print(f"ERROR: Invalid data type: {type(data)}, data: {str(data)[:200]}")
+                break
             
             # Check pagination metadata if available
             pager = _safe_get(data, "data", "pager")
