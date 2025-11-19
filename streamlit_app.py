@@ -138,12 +138,13 @@ def _safe_get(d, *path, default=None):
             return default
     return cur
 
-def _get_json(url, use_scrapingbee=False, scrapingbee_api_keys=None):
+def _get_json(url, use_scrapingbee=False, scrapingbee_api_keys=None, api_key_stats=None):
     """
     Fetch JSON data from URL.
     If use_scrapingbee=True and api_keys provided, uses ScrapingBee proxy service.
     scrapingbee_api_keys can be a single key (str) or a list of keys (list).
     Randomly selects a key from the list for each request.
+    api_key_stats: dict to track usage statistics (mutated in place)
     """
     if use_scrapingbee and scrapingbee_api_keys:
         # Normalize to list if single key provided
@@ -161,6 +162,12 @@ def _get_json(url, use_scrapingbee=False, scrapingbee_api_keys=None):
         # Randomly select an API key for this request
         selected_key = random.choice(api_keys)
         print(f"Using ScrapingBee API key: {selected_key[:10]}... (selected from {len(api_keys)} keys)")  # Debug log
+        
+        # Track API key usage
+        if api_key_stats is not None:
+            if selected_key not in api_key_stats:
+                api_key_stats[selected_key] = {"used": 0, "success": 0, "failed": 0, "rate_limited": 0}
+            api_key_stats[selected_key]["used"] += 1
         
         params = {
             'api_key': selected_key,
@@ -181,6 +188,10 @@ def _get_json(url, use_scrapingbee=False, scrapingbee_api_keys=None):
                 print(f"Response status: {r.status_code}")  # Debug log
                 
                 if r.status_code == 200:
+                    # Track successful request
+                    if api_key_stats is not None and selected_key in api_key_stats:
+                        api_key_stats[selected_key]["success"] += 1
+                    
                     # ScrapingBee returns the scraped content in response.text
                     # The content is the actual response from the target URL
                     try:
@@ -198,6 +209,10 @@ def _get_json(url, use_scrapingbee=False, scrapingbee_api_keys=None):
                             print(f"First 200 chars: {r.text[:200]}")
                             raise RuntimeError("ScrapingBee returned non-JSON content. The target URL might not be returning JSON.")
                 elif r.status_code == 403:
+                    # Track rate limit
+                    if api_key_stats is not None and selected_key in api_key_stats:
+                        api_key_stats[selected_key]["rate_limited"] += 1
+                    
                     # Rate limit or invalid key - try another key if available
                     if len(api_keys) > 1:
                         print(f"⚠️ HTTP 403 with key {selected_key[:10]}... Trying another key...")
@@ -207,6 +222,13 @@ def _get_json(url, use_scrapingbee=False, scrapingbee_api_keys=None):
                             selected_key = random.choice(remaining_keys)
                             params['api_key'] = selected_key
                             print(f"Switched to key: {selected_key[:10]}...")
+                            
+                            # Track usage of new key
+                            if api_key_stats is not None:
+                                if selected_key not in api_key_stats:
+                                    api_key_stats[selected_key] = {"used": 0, "success": 0, "failed": 0, "rate_limited": 0}
+                                api_key_stats[selected_key]["used"] += 1
+                            
                             continue  # Retry with new key
                     last_err = f"HTTP 403 - ScrapingBee API key may be invalid or quota exceeded"
                     print(f"⚠️ ScrapingBee Error: {last_err}")  # Debug log
@@ -224,6 +246,10 @@ def _get_json(url, use_scrapingbee=False, scrapingbee_api_keys=None):
                 print(f"Unexpected error: {e}")  # Debug log
             if attempt < RETRIES - 1:
                 time.sleep(0.7)
+        # Track failed request
+        if api_key_stats is not None and selected_key in api_key_stats:
+            api_key_stats[selected_key]["failed"] += 1
+        
         error_msg = f"Failed to fetch {url} via ScrapingBee. {last_err}"
         print(f"ERROR: {error_msg}")  # Debug log
         raise RuntimeError(error_msg)
@@ -458,7 +484,7 @@ def _row(prod):
         "discount_percent": _extract_discount_percent(prod),
     }
 
-def scrape_from_plp(plp_url, target_count, progress_bar, status_text, use_scrapingbee=False, scrapingbee_api_keys=None):
+def scrape_from_plp(plp_url, target_count, progress_bar, status_text, use_scrapingbee=False, scrapingbee_api_keys=None, api_key_stats=None):
     print(f"Starting scrape for URL: {plp_url}, target: {target_count}")  # Debug log
     if use_scrapingbee:
         if isinstance(scrapingbee_api_keys, list):
@@ -468,6 +494,10 @@ def scrape_from_plp(plp_url, target_count, progress_bar, status_text, use_scrapi
     api_pattern = plp_to_api(plp_url)
     print(f"API pattern: {api_pattern}")  # Debug log
     all_rows = []
+    
+    # Initialize API key stats if not provided
+    if api_key_stats is None and use_scrapingbee and scrapingbee_api_keys:
+        api_key_stats = {}
     try:
         page = int(parse_qs(urlparse(api_pattern).query).get("page", ["1"])[0])
     except:
@@ -485,7 +515,7 @@ def scrape_from_plp(plp_url, target_count, progress_bar, status_text, use_scrapi
         status_text.markdown(f"**📄 Fetching page {page}...** ({collected}/{target_count} products collected)")
         
         try:
-            data = _get_json(page_url, use_scrapingbee=use_scrapingbee, scrapingbee_api_keys=scrapingbee_api_keys)
+            data = _get_json(page_url, use_scrapingbee=use_scrapingbee, scrapingbee_api_keys=scrapingbee_api_keys, api_key_stats=api_key_stats)
             print(f"Got data, looking for products...")  # Debug log
             
             # Check pagination metadata if available
@@ -597,7 +627,11 @@ def scrape_from_plp(plp_url, target_count, progress_bar, status_text, use_scrapi
         df = df.reindex(columns=cols)
         print(f"Created DataFrame with {len(df)} rows and {len(df.columns)} columns")  # Debug log
     
-    return df
+    # Return both DataFrame and API key stats (or just DataFrame if stats is None)
+    if api_key_stats is not None:
+        return df, api_key_stats
+    else:
+        return df
 
 # Main UI
 st.title("🛍️ Digikala Product Scraper")
@@ -695,6 +729,8 @@ if 'scrape_results' not in st.session_state:
     st.session_state.scrape_results = None
 if 'scrape_error' not in st.session_state:
     st.session_state.scrape_error = None
+if 'api_key_stats' not in st.session_state:
+    st.session_state.api_key_stats = None
 
 # Main content area
 if scrape_button and not st.session_state.scraping:
@@ -737,18 +773,30 @@ if scrape_button and not st.session_state.scraping:
                 progress_bar = progress_placeholder.progress(0)
                 status_text = status_placeholder.empty()
                 
+                # Initialize API key stats
+                api_key_stats = {}
+                
                 # Scrape
-                df = scrape_from_plp(
+                result = scrape_from_plp(
                     plp_url, 
                     actual_target, 
                     progress_bar, 
                     status_text,
                     use_scrapingbee=use_scrapingbee if use_scrapingbee and scrapingbee_api_keys else False,
-                    scrapingbee_api_keys=scrapingbee_api_keys if use_scrapingbee and scrapingbee_api_keys else None
+                    scrapingbee_api_keys=scrapingbee_api_keys if use_scrapingbee and scrapingbee_api_keys else None,
+                    api_key_stats=api_key_stats
                 )
+                
+                # Handle return value (can be tuple or just DataFrame for backward compatibility)
+                if isinstance(result, tuple):
+                    df, api_key_stats = result
+                else:
+                    df = result
+                    api_key_stats = {}
                 
                 # Store results in session state
                 st.session_state.scrape_results = df
+                st.session_state.api_key_stats = api_key_stats if api_key_stats else None
                 st.session_state.scraping = False
                 
                 # Clear placeholders
@@ -812,6 +860,58 @@ if st.session_state.scrape_results is not None:
         with col4:
             promotions = df["is_promotion"].sum()
             st.metric("Promotions", promotions)
+        
+        # API Key Usage Statistics (if ScrapingBee was used)
+        if st.session_state.api_key_stats and len(st.session_state.api_key_stats) > 0:
+            st.markdown("---")
+            st.subheader("🔑 API Key Usage Statistics")
+            
+            # Create a summary DataFrame for display
+            stats_data = []
+            total_used = 0
+            total_success = 0
+            total_failed = 0
+            total_rate_limited = 0
+            
+            for key, stats in st.session_state.api_key_stats.items():
+                key_short = f"{key[:10]}...{key[-6:]}" if len(key) > 20 else key
+                stats_data.append({
+                    "API Key": key_short,
+                    "Used": stats["used"],
+                    "Success": stats["success"],
+                    "Failed": stats["failed"],
+                    "Rate Limited": stats["rate_limited"],
+                    "Remaining (est.)": max(0, 1000 - stats["used"])  # Assuming 1000 limit per key
+                })
+                total_used += stats["used"]
+                total_success += stats["success"]
+                total_failed += stats["failed"]
+                total_rate_limited += stats["rate_limited"]
+            
+            # Sort by usage (most used first)
+            stats_data.sort(key=lambda x: x["Used"], reverse=True)
+            
+            # Display summary metrics
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total Requests", total_used)
+            with col2:
+                st.metric("Successful", total_success, delta=f"{total_success/total_used*100:.1f}%" if total_used > 0 else "0%")
+            with col3:
+                st.metric("Failed", total_failed, delta=f"{total_failed/total_used*100:.1f}%" if total_used > 0 else "0%", delta_color="inverse")
+            with col4:
+                st.metric("Rate Limited", total_rate_limited, delta=f"{total_rate_limited/total_used*100:.1f}%" if total_used > 0 else "0%", delta_color="inverse")
+            
+            # Display detailed table
+            stats_df = pd.DataFrame(stats_data)
+            st.dataframe(stats_df, width='stretch', hide_index=True)
+            
+            # Show estimated remaining capacity
+            total_keys = len(st.session_state.api_key_stats)
+            estimated_total_capacity = total_keys * 1000  # Assuming 1000 per key
+            estimated_remaining = estimated_total_capacity - total_used
+            
+            st.info(f"📊 **Estimated Capacity:** {estimated_remaining:,} requests remaining out of {estimated_total_capacity:,} total ({total_keys} keys × 1,000 requests/key)")
     else:
         st.warning("⚠️ No products were found. Please check the URL and try again.")
     
@@ -819,6 +919,7 @@ if st.session_state.scrape_results is not None:
     if st.button("🔄 Scrape Again", width='stretch', key="scrape_again_btn"):
         st.session_state.scrape_results = None
         st.session_state.scrape_error = None
+        st.session_state.api_key_stats = None
         st.rerun()
 
 elif st.session_state.scrape_error:
