@@ -803,8 +803,8 @@ if scrape_button and not st.session_state.scraping:
                 progress_placeholder.empty()
                 status_placeholder.empty()
                 
-                # Trigger rerun to display results from session state
-                st.rerun()
+                # Display results immediately (no rerun needed)
+                # Results will be shown in the results section below
                 
             except Exception as scrape_error:
                 st.session_state.scrape_error = str(scrape_error)
