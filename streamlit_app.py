@@ -153,8 +153,9 @@ def _get_json(url, use_scrapingbee=False, scrapingbee_api_key=None):
             'api_key': scrapingbee_api_key,
             'url': url,
             'render_js': 'false',  # Set to 'true' if you need JavaScript rendering
-            'premium_proxy': 'true',  # Use premium proxies
-            'country_code': 'us'  # Optional: specify country
+            # Note: 'premium_proxy' requires a paid plan. Remove if you have a free plan.
+            # 'premium_proxy': 'true',  # Uncomment if you have a premium plan
+            # 'country_code': 'us'  # Optional: specify country
         }
         
         headers = {"Accept": "application/json"}
@@ -185,8 +186,15 @@ def _get_json(url, use_scrapingbee=False, scrapingbee_api_key=None):
                             print(f"First 200 chars: {r.text[:200]}")
                             raise RuntimeError("ScrapingBee returned non-JSON content. The target URL might not be returning JSON.")
                 elif r.status_code == 403:
-                    last_err = f"HTTP 403 - ScrapingBee API key may be invalid or quota exceeded"
+                    # Try to get more details from the response
+                    try:
+                        error_details = r.json() if r.text else {}
+                        error_msg = error_details.get('message', r.text[:200] if r.text else 'No details')
+                        last_err = f"HTTP 403 - ScrapingBee Error: {error_msg}. Possible causes: Invalid API key, quota exceeded, or premium features used without premium plan."
+                    except:
+                        last_err = f"HTTP 403 - ScrapingBee API key may be invalid, quota exceeded, or you're using premium features without a premium plan. Response: {r.text[:200] if r.text else 'No response'}"
                     print(f"⚠️ ScrapingBee Error: {last_err}")  # Debug log
+                    print(f"Full response: {r.text[:500]}")  # Debug log
                 else:
                     last_err = f"HTTP {r.status_code}"
                     print(f"⚠️ ScrapingBee Error: {last_err}")  # Debug log
