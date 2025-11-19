@@ -18,7 +18,7 @@ TIMEOUT = 15  # Reduced timeout for Streamlit Cloud
 RETRIES = 2  # Reduced retries to fail faster
 
 # ScrapingBee API Key - Put your API key here
-SCRAPINGBEE_API_KEY = "IWI52LZXR6FOQ9VWQFX4BRWQUX9DV4PZX6BLPKL02JVGZF8D6X4PUTDYZVBHVFIKW9EOKNUVK9799S74"  # Replace with your actual ScrapingBee API key
+SCRAPINGBEE_API_KEY = "DOFLGDGT60O6F63AS517BUX1IZ07LD2ZW5GKXYMLFQIV9VOE633RC5CRHF627Z77M8ESW5U6MYX4FUFI"  # Replace with your actual ScrapingBee API key
 # ============================
 
 # Helper functions
